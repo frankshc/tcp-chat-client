@@ -12,11 +12,10 @@
 #include <stdbool.h>
 #include <pthread.h>
 
-#define MAXBUFLEN 32
-#define MAXDATASIZE MESSAGESIZE + COMMANDSIZE + USERNAMESIZE
 #define COMMANDSIZE 1
 #define USERNAMESIZE 20
 #define MESSAGESIZE 1000
+#define MAXDATASIZE MESSAGESIZE + COMMANDSIZE + USERNAMESIZE
 #define N 5
 
 #define UNICAST 1
@@ -46,39 +45,40 @@ int main(int argc, char *argv[])
     pthread_t thread;
     struct addrinfo hints, *servinfo, *p;
     int rv;
-    char* server_address, server_port, username;
+    char server_address[30], server_port[30], username[30];
             
     char buf[MAXDATASIZE];
 
     
     char s[INET6_ADDRSTRLEN];
     
-    /*
+    
     if (argc != 4) {
         fprintf(stderr,"usage: tcp-chat-client [server_address] [server_port] [user_name]\n");
         exit(1);
     }
-     */
+     
     
-    server_address = argv[1];
-    server_port = argv[2];
-    username = argv[3];
+    strcpy(server_address, argv[1]);
+    strcpy(server_port, argv[2]);
+    strcpy(username, argv[3]);
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     
-    /*
+   
     if ((rv = getaddrinfo(server_address, server_port, &hints, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         return 1;
     }
-     */
     
+    /*
     if ((rv = getaddrinfo(NULL, "3490", &hints, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         return 1;
     }
+     * */
 
     // loop through all the results and make a socket
     for(p = servinfo; p != NULL; p = p->ai_next) {
@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
     printf("client: connected to chat server at %s\n", s);
     
     
-    join(sockfd, "ben"); //join chat
+    join(sockfd, username); //join chat
     
     pthread_create(&thread, NULL, (void*) listenForMessages, (void*) &sockfd); //use thread to allow listening and typing concurrently
     
@@ -282,13 +282,17 @@ void listenForTyping(int sockfd){
             memcpy(inst.message, message, strlen(message));
              
         }
-            memcpy(sendbuf, &inst, MAXDATASIZE);
+            memcpy(sendbuf, (char*) &inst, MAXDATASIZE);
             if (send(sockfd, sendbuf, MAXDATASIZE, 0) == -1){
                         perror("client: send");
                         exit(1);
             }
         
             memset(sendbuf, 0, MAXDATASIZE);
+            memset(message, 0, MESSAGESIZE);
+            memset(string, 0, MESSAGESIZE);
+            memset(inst.message, 0, MESSAGESIZE);
+            memset(inst.username, 0, USERNAMESIZE);
             
     }
     
