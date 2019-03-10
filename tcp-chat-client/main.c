@@ -13,20 +13,31 @@
 #include <pthread.h>
 
 #define MAXBUFLEN 32
-#define MAXDATASIZE 200 
+#define MAXDATASIZE MESSAGESIZE + COMMANDSIZE + USERNAMESIZE
+#define COMMANDSIZE 1
+#define USERNAMESIZE 20
+#define MESSAGESIZE 1000
 #define N 5
+
+#define UNICAST 1
+#define BROADCAST 2
+#define LIST 3
+#define EXIT 4
+#define JOIN 5
+#define ERROR 6
+
 
 // get sockaddr, IPv4 or IPv6:
 void *get_in_addr(struct sockaddr *sa);
-//char* concat(const char *s1, const char *s2);
-//char* pad(const char *s);
+int join(int sockfd, char* username);
 void listenForTyping(int sockfd);
-void *listenForMessages(int sockfd);
+void *listenForMessages(int *sock);
+
 
 struct instruction {
-    char command[20];
-    char username[20];
-    char message[100];
+    int command;
+    char username[USERNAMESIZE];
+    char message[MESSAGESIZE];
 };
 
 int main(int argc, char *argv[])
@@ -95,12 +106,10 @@ int main(int argc, char *argv[])
             s, sizeof s);
     printf("client: connected to chat server at %s\n", s);
     
-    //must first try to join server, send JOIN [USERNAME] to the server
-    //server will tell me if it succeeded, otherwise i will have to try again with a diff username
     
-    join(sockfd, "ben");
+    join(sockfd, "ben"); //join chat
     
-    pthread_create(&thread, NULL, listenForMessages, sockfd);
+    pthread_create(&thread, NULL, (void*) listenForMessages, (void*) &sockfd); //use thread to allow listening and typing concurrently
     
     listenForTyping(sockfd);
 
@@ -122,43 +131,42 @@ void *get_in_addr(struct sockaddr *sa)
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
-
+//requests to join chat group
+//returns 1 if successful
 //return -1 if unsuccessful
 int join(int sockfd, char* username){
     char sendbuf[MAXDATASIZE];
     char recvbuf[MAXDATASIZE];
     
     struct instruction recvinst;
+    struct instruction inst;
     
+    memset(&inst, 0, MAXDATASIZE);
     memset(sendbuf, 0, MAXDATASIZE);
     memset(recvbuf, 0, MAXDATASIZE);
-    char *command = "JOIN"; 
     
-    struct instruction inst;
-    memset(&inst, 0, 140);
-
-    
-    memcpy(inst.command, command, strlen(command));
-    memcpy(inst.username, username, strlen(username));
-
-    memcpy(sendbuf, &inst, 140);
+ 
+    inst.command = JOIN;
+    memcpy(inst.username, username, USERNAMESIZE);
+    memcpy(sendbuf, &inst, MAXDATASIZE);
     
     
     if (send(sockfd, sendbuf, MAXDATASIZE, 0) == -1){
-        perror("client: sendto");
+        perror("client: send: ");
         exit(1);
     }
-    
+
     //wait for confirmation that you've joined
-    if ((recv(sockfd, recvbuf, MAXDATASIZE-1, 0)) == -1) {
-        perror("client: recv");
+    if ((recv(sockfd, recvbuf, MAXDATASIZE, 0)) == -1) {
+        perror("client: recv: ");
         exit(1);
     }
     
     recvinst = *((struct instruction *)recvbuf);
-    
-    if (strcmp(recvinst.message, "ERROR") == 0)
+    if (recvinst.command == ERROR){
+        printf("Error joining: %s\n", recvinst.message);
         return -1;
+    }
     else{
         printf("%s\n", recvinst.message);
         return 1;
@@ -166,75 +174,91 @@ int join(int sockfd, char* username){
 }
 
 
-
-void *listenForMessages(int sockfd){
+//function that calls recv to check for messages relayed by server
+//responds accordingly depending on type of command received
+void *listenForMessages(int *sock){
     char recvbuf[MAXDATASIZE];
     struct instruction recvinst;
     bool connected = true;
+    int numbytes;
+    int sockfd = *sock;
      
     while(connected){
-        if ((recv(sockfd, recvbuf, MAXDATASIZE-1, 0)) == -1){ 
+        if ((numbytes = recv(sockfd, recvbuf, MAXDATASIZE, 0)) == -1){ 
             perror("client: recv");
             exit(1);
         }
-        recvinst = *((struct instruction *)recvbuf);
-        
-        printf("Command: %s \n", recvinst.command);
-        printf("Username: %s \n", recvinst.username);
-        printf("Message: %s \n", recvinst.message);
+        if (numbytes > 0){
+            printf("numbytes: %d\n", numbytes);
+            recvinst = *((struct instruction *)recvbuf);
+
+            if(recvinst.command == UNICAST || recvinst.command == BROADCAST){
+                printf("%s: ", recvinst.username);
+                printf("%s\n", recvinst.message);
+            }
+
+            if(recvinst.command == EXIT){
+                printf("Exited chat\n");
+                connected = false;
+            }
+
+            if(recvinst.command == LIST){
+                printf("List of clients: %s\n", recvinst.message);
+                connected = false;
+            }
             
-        
-        if(strcmp(recvinst.command, "MESSAGE") == 0){
-            printf("Received message from: %s\n", recvinst.username);
-            printf("Message: %s\n", recvinst.message);
+            if(recvinst.command == ERROR){
+                printf("Error message: %s\n", recvinst.message);
+            }
+
+            memset(recvbuf, 0, MAXDATASIZE);
         }
-        
-        if(strcmp(recvinst.command, "EXIT") == 0){
-            printf("Exited chat\n");
-            connected = false;
-        }
-        
-        if(strcmp(recvinst.command, "LIST") == 0){
-            printf("List of clients: %s\n", recvinst.message);
-            connected = false;
-        }
-        
     
     }
 }
 
+//continuously checks for user input
+//trasnmits packets to server depending on user input
 void listenForTyping(int sockfd){
     
     bool exited = false;
     char string[MAXDATASIZE];
-    char command[20], message[100];
-    struct instruction inst, recvinst;
+    char command[20], message[MESSAGESIZE];
+    struct instruction inst;
     char sendbuf[MAXDATASIZE];
     char recvbuf[MAXDATASIZE];
+    char * broad = "broadcast";
     
-    memset(command, 0, 20);
-    memset(message, 0, 100);
+    memset(command, 0, COMMANDSIZE);
+    memset(message, 0, MESSAGESIZE);
     memset(recvbuf, 0, MAXDATASIZE);
     
     while (!exited){
-        printf("Type: ");
         scanf(" %[^\n]s", string);
         char* place = strchr(string, ' ');
         
         if (place == NULL){
+            //one word command
             if(strcmp(string, "exit") == 0){
                 exited = true;
+                inst.command = EXIT;
+                memset(inst.username, 0, USERNAMESIZE);
+                memset(inst.message, 0, MESSAGESIZE);
             
             }
             else if(strcmp(string, "list") == 0){
-            
-            
+                inst.command = LIST;
+                memset(inst.username, 0, USERNAMESIZE);
+                memset(inst.message, 0, MESSAGESIZE);
             }
             else{
                 printf("Command not recognized\n");
+                continue;
             }
         }
         else{
+            //two word command
+            //break it up into two strings
             for(int i = 0; i < strlen(string); i++){
                 if (string[i] == ' '){
                     memcpy(command, string, i);
@@ -245,19 +269,26 @@ void listenForTyping(int sockfd){
                 }
                 
             }
-            memcpy(inst.command, command, strlen(command));
-            memcpy(inst.message, message, strlen(message));
-            memset(inst.username, 0, 20);
-            memcpy(sendbuf, &inst, 140);
-
             
-             if (send(sockfd, sendbuf, MAXDATASIZE, 0) == -1){
-                perror("client: send");
-                exit(1);
+            if (strcmp(command,broad) == 0){
+                inst.command = BROADCAST;
+                memset(inst.username, 0, USERNAMESIZE);
             }
-    
-  
+            else{
+                inst.command = UNICAST;
+                memcpy(inst.username, command, USERNAMESIZE);
+            }
+            
+            memcpy(inst.message, message, strlen(message));
+             
         }
+            memcpy(sendbuf, &inst, MAXDATASIZE);
+            if (send(sockfd, sendbuf, MAXDATASIZE, 0) == -1){
+                        perror("client: send");
+                        exit(1);
+            }
+        
+            memset(sendbuf, 0, MAXDATASIZE);
             
     }
     
